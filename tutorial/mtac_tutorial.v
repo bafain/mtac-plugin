@@ -315,7 +315,7 @@ Abort.
 (** Of course, we can always provide the proof term directly instead
 of going into interactive mode. In this case we don't need to
 explicitly provide the arguments. [Mrun] is in fact notation for the
-application of the tactic [rrun] with the [$(...)$] extension in Coq 8.5
+application of the tactic [rrun] with the [ltac:(...)] extension in Coq 8.5
 to use tactics to build terms. *)
 
 Example z_in_xyz (x y z : nat) : In z (x :: y :: z :: nil)
