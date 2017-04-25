@@ -1,5 +1,5 @@
 # Mtac as a Plugin
-Typed Tactics for Coq 8.5
+Typed Tactics for Coq 8.6
 
 Copyright (c) 2015 Beta Ziliani <bziliani@famaf.unc.edu.ar>
 
@@ -22,7 +22,7 @@ The archive has 3 subdirectories:
 Installation
 ============
 
-The plugin works currently with Coq v8.5. Through OPAM, 
+The plugin works currently with Coq v8.6. Through OPAM, 
 this plugin is available in Coq's development repository:
 ```
 opam repo add coq-released https://coq.inria.fr/opam/released

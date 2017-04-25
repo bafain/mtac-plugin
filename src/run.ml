@@ -11,10 +11,14 @@ open Environ
 open Evarutil
 open Evd
 open Names
-open Closure
+open CClosure
 open Util
 open Evarconv
 open Libnames
+open Sigma
+
+module NamedDecl = Context.Named.Declaration
+module RelDecl = Context.Rel.Declaration
 
 let reduce_value = Tacred.compute
 
@@ -56,7 +60,7 @@ module ConstrBuilder = struct
   exception WrongConstr of t * constr
 
   let from_coq s (env, sigma as ctx) cterm =
-    let (head, args) = whd_betadeltaiota_stack env sigma cterm in
+    let (head, args) = whd_all_stack env sigma cterm in
     let args = Array.of_list args in
     if equal s head then
       args
@@ -79,7 +83,7 @@ module UConstrBuilder = struct
   exception WrongConstr of t * constr
 
   let from_coq s (env, sigma as ctx) cterm =
-    let (head, args) = whd_betadeltaiota_stack env sigma cterm in
+    let (head, args) = whd_all_stack env sigma cterm in
     let args = Array.of_list args in
     if equal s sigma env head then
       args
@@ -152,7 +156,7 @@ module Exceptions = struct
   let error_array_zero = "Array must have non-zero length"
   let unknown_reduction_strategy = "Unknown reduction strategy"
 
-  let block = Errors.error
+  let block = CErrors.error
 end
 
 module ReductionStrategy = struct
@@ -170,44 +174,44 @@ module ReductionStrategy = struct
   let has_definition ts env t = 
     if isVar t then
       let var = destVar t in
-      if not (Closure.is_transparent_variable ts var) then 
+      if not (CClosure.is_transparent_variable ts var) then 
 	false
       else
-	let (_, v,_) = Environ.lookup_named var env in
+	let v = Environ.lookup_named var env in
 	match v with
-	  | Some _ -> true
+	  | LocalDef _ -> true
 	  | _ -> false
     else if isRel t then
       let n = destRel t in
-      let (_,v,_) = Environ.lookup_rel n env in
+      let v = Environ.lookup_rel n env in
       match v with
-	| Some _ -> true
+	| LocalDef _ -> true
 	| _ -> false
     else if isConst t then
       let (c, _) = destConst t in
-      Closure.is_transparent_constant ts c && Environ.evaluable_constant c env
+      CClosure.is_transparent_constant ts c && Environ.evaluable_constant c env
     else
       false
 
   let get_definition env t =
     if isVar t then
       let var = destVar t in
-      let (_, v,_) = Environ.lookup_named var env in
+      let v = Environ.lookup_named var env in
       match v with
-	| Some c -> c
-	| _ -> Errors.anomaly (Pp.str "get_definition for var didn't have definition!")
+	| LocalDef (_, c, _) -> c
+	| _ -> CErrors.anomaly (Pp.str "get_definition for var didn't have definition!")
     else if isRel t then
       let n = destRel t in
-      let (_,v,_) = Environ.lookup_rel n env in 
+      let v = Environ.lookup_rel n env in 
       match v with
-	| Some v -> (Vars.lift n) v
-	| _ -> Errors.anomaly (Pp.str "get_definition for rel didn't have definition!")
+	| LocalDef (_, v, _) -> (Vars.lift n) v
+	| _ -> CErrors.anomaly (Pp.str "get_definition for rel didn't have definition!")
     else if isConst t then
       let c = destConst t in
       let (d,_) = Environ.constant_value env c in 
       d
     else
-      Errors.anomaly (Pp.str "get_definition didn't have definition!")
+      CErrors.anomaly (Pp.str "get_definition didn't have definition!")
 	
   let try_unfolding ts env t =
     if has_definition ts env t then
@@ -223,7 +227,7 @@ module ReductionStrategy = struct
       | Lambda (_, _, trm) when args <> [] -> 
         (Vars.subst1 (List.hd args) trm, List.tl args)
       | LetIn (_, trm, _, body) -> (Vars.subst1 trm body, args)
-      | Var _ | Rel _ | Const _ -> (try_unfolding Closure.all_transparent env h, args)
+      | Var _ | Rel _ | Const _ -> (try_unfolding CClosure.all_transparent env h, args)
       | _ -> h, args
     in applist r
         
@@ -234,7 +238,7 @@ module ReductionStrategy = struct
     else if isRedSimpl sigma env strategy then
       Tacred.simpl env sigma c
     else if isRedWhd sigma env strategy then
-      whd_betadeltaiota env sigma c
+      whd_all env sigma c
     else if isRedOneStep sigma env strategy then
       one_step env sigma c
     else
@@ -293,7 +297,7 @@ module CoqList = struct
   let isCons = Constr.isConstr mkCons
 
   let rec from_coq_conv (env, sigma as ctx) (fconv : Term.constr -> 'a) cterm =
-    let (constr, args) = whd_betadeltaiota_stack env sigma cterm in
+    let (constr, args) = whd_all_stack env sigma cterm in
     if isNil constr then [] else
     if not (isCons constr) then invalid_arg "not a list" else
     let elt = List.nth args 1 in
@@ -429,7 +433,7 @@ end
 module CoqAscii = struct
 
   let from_coq env sigma c =
-    let (h, args) = whd_betadeltaiota_stack env sigma c in
+    let (h, args) = whd_all_stack env sigma c in
     let rec from_bits n bits =
       match bits with
         | [] -> 0
@@ -449,7 +453,7 @@ module CoqString = struct
   let isString = Constr.isConstr mkString
 
   let rec from_coq env sigma s =
-    let (h, args) = whd_betadeltaiota_stack env sigma s in
+    let (h, args) = whd_all_stack env sigma s in
     if isEmpty h then
       ""
     else if isString h then
@@ -530,7 +534,7 @@ struct
     Term.mkApp (Lazy.force mkArrRef, [|a ; CoqN.to_coq i; n|])
 
   let from_coq env evd c =
-    let c = whd_betadeltaiota env evd c in
+    let c = whd_all env evd c in
     if isApp c && isArrRef (fst (destApp c)) then
       CoqN.from_coq env evd (snd (destApp c)).(1)
     else
@@ -659,7 +663,7 @@ let return s es t = Val (s, es, t)
 let fail s es t = Err (s, es, t)
 
 let rec open_pattern (env, sigma) p evars =
-  let (patt, args) = whd_betadeltaiota_stack env sigma p in
+  let (patt, args) = whd_all_stack env sigma p in
   let length = List.length args in
   let nth = List.nth args in
   if MtacNames.isBase sigma env patt && length = 6 then
@@ -670,15 +674,15 @@ let rec open_pattern (env, sigma) p evars =
   else if MtacNames.isTele sigma env patt && length = 5 then
     let c = nth 2 in
     let f = nth 4 in
-    let (sigma', evar) = Evarutil.new_evar env sigma c in
-    open_pattern (env, sigma') (mkApp (f, [|evar|])) (evar :: evars)
+    let Sigma (evar, sigma', _) = Evarutil.new_evar env (Unsafe.of_evar_map sigma) c in
+    open_pattern (env, (to_evar_map sigma')) (mkApp (f, [|evar|])) (evar :: evars)
   else
     None
 
 
 
 let rec runmatch' (env, sigma as ctxt) t ty patts' i =
-  let (patts, args) =  whd_betadeltaiota_stack env sigma patts' in
+  let (patts, args) =  whd_all_stack env sigma patts' in
   if CoqList.isNil patts && List.length args = 1 then
     Exceptions.mkRaise Exceptions.noPatternMatches env sigma 
   else if CoqList.isCons patts && List.length args = 3 then
@@ -723,7 +727,7 @@ let runmatch (env, sigma as ctxt) t ty patts =
    
     
 let print env sigma s = Printf.printf "[DEBUG] %s\n" (CoqString.from_coq env sigma s)
-let print_term t = Printf.printf "[DEBUG] "; msg (Termops.print_constr t); Printf.printf "\n"
+let print_term t = Printf.printf "[DEBUG] "; Feedback.msg_notice (Termops.print_constr t); Printf.printf "\n"
 
 exception AbstractingArrayType
 
@@ -759,15 +763,14 @@ let noccurn_env env i =
   let rec noc n =
     if n = 1 then true
     else
-      let (_, t, a) = Environ.lookup_rel (i-n+1) env in
-      Vars.noccurn (n-1) a 
-      && (if t = None then true else Vars.noccurn (n-1) (Option.get t))
-      && noc (n-1)
+      match Environ.lookup_rel (i-n+1) env with
+      | LocalAssum (_, a) -> Vars.noccurn (n-1) a && true && noc (n-1)
+      | LocalDef (_, t, a) -> Vars.noccurn (n-1) a && Vars.noccurn (n-1) t && noc (n-1)
   in noc i
 
 let name_occurn_env env n =
   let ids = Environ.fold_named_context_reverse
-    (fun s (n', _, _) -> Id.Set.add n' s)
+    (fun s v -> Id.Set.add (NamedDecl.get_id v) s)
     ~init:Id.Set.empty env in (* compute set of ids in env *)
   let ids = Id.Set.remove n ids in (* remove n *)
   let ids = Environ.really_needed env ids in (* and compute closure of ids *)
@@ -781,7 +784,7 @@ let dest_Case (env, sigma) t_type t =
   let (sigma, dyn) = MtacNames.mkUConstr "dyn" sigma env in
   let (sigma, mkDyn) = MtacNames.mkUConstr "Dyn" sigma env in
   try
-    let t = whd_betadeltaiota env sigma t in
+    let t = whd_all env sigma t in
     let (info, return_type, discriminant, branches) = Term.destCase t in
     let branch_dyns = Array.fold_left (
       fun l t -> 
@@ -817,18 +820,18 @@ let make_Case (env, sigma) case =
   let (sigma, case_branches) = MtacNames.mkConstr "case_branches" sigma env in
   let repr_ind = Term.applist(case_ind, [case]) in
   let repr_val = Term.applist(case_val, [case]) in
-  let repr_val_red = whd_betadeltaiota env sigma repr_val in
+  let repr_val_red = whd_all env sigma repr_val in
   let repr_type = Term.applist(case_type, [case]) in
   let repr_return = Term.applist(case_return, [case]) in
   let repr_return_unpack = Term.applist(elem, [repr_return]) in
-  let repr_return_red = whd_betadeltaiota env sigma repr_return_unpack in
+  let repr_return_red = whd_all env sigma repr_return_unpack in
   let repr_branches = Term.applist(case_branches, [case]) in
   let repr_branches_list = CoqList.from_coq (env, sigma) repr_branches in
   let repr_branches_dyns = 
       List.map (fun t -> Term.applist(elem, [t])) repr_branches_list in
   let repr_branches_red =       
-    List.map (fun t -> whd_betadeltaiota env sigma t) repr_branches_dyns in
-  let t_type, l = Term.decompose_app (whd_betadeltaiota env sigma repr_ind) in
+    List.map (fun t -> whd_all env sigma t) repr_branches_dyns in
+  let t_type, l = Term.decompose_app (whd_all env sigma repr_ind) in
   if Term.isInd t_type then
     match Term.kind_of_term t_type with
     | Term.Ind ((mind, ind_i), _) -> 
@@ -846,7 +849,7 @@ let make_Case (env, sigma) case =
 
 
 let get_Constrs (env, sigma) t =
-  let t_type, args = Term.decompose_app (whd_betadeltaiota env sigma t) in
+  let t_type, args = Term.decompose_app (whd_all env sigma t) in
   if Term.isInd t_type then
     match Term.kind_of_term t_type with
     | Term.Ind ((mind, ind_i), _) -> 
@@ -917,7 +920,7 @@ let multi_subst l c =
 
 (** Abstract *)
 let abs ?(mkprod=false) (env, sigma, metas) a p x y =
-  let x = whd_betadeltaiota env sigma x in
+  let x = whd_all env sigma x in
     (* check if the type p does not depend of x, and that no variable
        created after x depends on it.  otherwise, we will have to
        substitute the context, which is impossible *)
@@ -963,20 +966,27 @@ let cvar (env, sigma, metas) ty hyp =
   let _, _, subs, env' = List.fold_right (fun (i, e, t) (avoid, avoids, subs, env') -> 
     if isRel i then
       let n = destRel i in
-      let na, _, _ = List.nth (rel_context env) (n-1) in
+      let na = RelDecl.get_name (List.nth (rel_context env) (n-1)) in
       let id = Namegen.next_name_away na avoid in
       let e = try Option.map (multi_subst subs) e with Not_found -> Exceptions.block "Not well-formed hypotheses" in
       let t = try multi_subst subs t with Not_found -> Exceptions.block "Not well-formed hypotheses" in
       let b = check_vars e t avoids in
-      let d = (id, e, t) in
+      let d = match e with
+        | Some e -> NamedDecl.LocalDef (id, e, t)
+        | None -> NamedDecl.LocalAssum (id, t)
+      in
       if b then 
 	(id::avoid, Idset.add id avoids, (n, mkVar id) :: subs, push_named d env')
       else
 	Exceptions.block "Not well-formed hypotheses"
     else
       let id = destVar i in
+      let d = match e with
+        | Some e -> NamedDecl.LocalDef (id, e, t)
+        | None -> NamedDecl.LocalAssum (id, t)
+      in
       if check_vars e t avoids then
-	(id::avoid, Idset.add id avoids, subs, push_named (id, e, t) env')
+	(id::avoid, Idset.add id avoids, subs, push_named d env')
       else
 	Exceptions.block "Not well-formed hypotheses"
   ) hyp ([], Idset.empty, [], empty_env)
@@ -985,8 +995,8 @@ let cvar (env, sigma, metas) ty hyp =
   try 
     if List.distinct vars then
       let evi = Evd.make_evar (Environ.named_context_val env') (multi_subst subs ty) in
-      let (sigma, e) = Evarutil.new_pure_evar_full sigma evi in
-      return sigma metas (mkEvar (e, Array.of_list vars))
+      let Sigma (e, sigma, _) = Evarutil.new_pure_evar_full (Unsafe.of_evar_map sigma) evi in
+      return (to_evar_map sigma) metas (mkEvar (e, Array.of_list vars))
     else
       Exceptions.block "Duplicated variable in hypotheses"
   with Not_found -> 
@@ -994,7 +1004,7 @@ let cvar (env, sigma, metas) ty hyp =
 
 
 let rec run' (env, renv, sigma, undo, metas as ctxt) t =
-  let t = whd_betadeltaiota env sigma t in
+  let t = whd_all env sigma t in
   let (h, args) = Term.decompose_app t in
   let nth = List.nth args in
   let constr c =
@@ -1067,7 +1077,7 @@ let rec run' (env, renv, sigma, undo, metas as ctxt) t =
 	let renv = Vars.lift 1 renv in
         let ur = ref [] in
         begin
-	  let env = push_rel (Anonymous, None, a) env in
+	  let env = push_rel (LocalAssum (Anonymous, a)) env in
 	  let (sigma, renv) = Hypotheses.cons_hyp a (mkRel 1) None renv sigma env in
 	match run' (env, renv, sigma, (ur :: undo), metas) fx with
           | Val (sigma', metas, e) ->
@@ -1085,7 +1095,7 @@ let rec run' (env, renv, sigma, undo, metas as ctxt) t =
         end
 
       | 13 -> (* is_param *)
-	let e = whd_betadeltaiota env sigma (nth 1) in
+	let e = whd_all env sigma (nth 1) in
 	if isRel e then
 	  return sigma metas (Lazy.force CoqBool.mkTrue)
 	else
@@ -1101,11 +1111,11 @@ let rec run' (env, renv, sigma, undo, metas as ctxt) t =
 *)
       | 16 -> (* evar *)
 	let t = nth 0 in
-	let (sigma', ev) = Evarutil.new_evar env sigma t in
-	return sigma' (ExistentialSet.add (fst (destEvar ev)) metas) ev
+	let Sigma (ev, sigma', _) = Evarutil.new_evar env (Unsafe.of_evar_map sigma) t in
+	return (to_evar_map sigma') (ExistentialSet.add (fst (destEvar ev)) metas) ev
 
       | 17 -> (* is_evar *)
-	let e = whd_betadeltaiota env sigma (nth 1) in
+	let e = whd_all env sigma (nth 1) in
 	if isEvar e then
 	  return sigma metas (Lazy.force CoqBool.mkTrue)
 	else
@@ -1120,7 +1130,7 @@ let rec run' (env, renv, sigma, undo, metas as ctxt) t =
 	let renv = Vars.lift 1 renv in
         let ur = ref [] in
         begin
-	  let env = push_rel (Anonymous, Some t, a) env in
+	  let env = push_rel (LocalDef (Anonymous, t, a)) env in
 	  let (sigma, renv) = Hypotheses.cons_hyp a (mkRel 1) (Some t) renv sigma env in
 	match run' (env, renv, sigma, (ur :: undo), metas) fx with
           | Val (sigma', metas, e) ->
@@ -1249,11 +1259,10 @@ let clean_unused_metas sigma metas term =
     ExistentialSet.fold (fun ev metas ->
       let ev_info = Evd.find sigma ev  in
       let metas = rem (Evd.evar_concl ev_info) metas in
-      let metas = List.fold_right (fun (_, body, ty) metas ->
-	let metas = rem ty metas in
-	match body with
-	  | None -> metas
-	  | Some v -> rem v metas) (Evd.evar_context ev_info) metas in
+      let metas = List.fold_right (fun v metas ->
+	match v with
+	  | NamedDecl.LocalAssum (_, ty) -> rem ty metas
+	  | NamedDecl.LocalDef (_, v, ty) -> rem v (rem ty metas)) (Evd.evar_context ev_info) metas in
       match Evd.evar_body ev_info with
 	| Evar_empty -> metas
 	| Evar_defined b -> rem b metas
@@ -1264,8 +1273,8 @@ let clean_unused_metas sigma metas term =
   ExistentialSet.fold (fun ev sigma -> Evd.remove sigma ev) metas sigma
 
 let build_hypotheses sigma env =
-  let renv = List.mapi (fun n (_, t, ty) -> (mkRel (n+1), t, ty)) (rel_context env)
-    @ List.rev (List.map (fun (n, t, ty) -> (mkVar n, t, ty)) (named_context env))
+  let renv = List.mapi (fun n v -> (mkRel (n+1), RelDecl.get_value v, RelDecl.get_type v)) (rel_context env)
+    @ List.rev (List.map (fun v -> (mkVar (NamedDecl.get_id v), NamedDecl.get_value v, NamedDecl.get_type v)) (named_context env))
   in (* [H : x > 0, x : nat] *)
   let rec build renv =
     match renv with

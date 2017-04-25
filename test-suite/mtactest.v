@@ -160,7 +160,7 @@ Time Definition mresult4: nat := Mrun (madd 10 10000).
 
 Ltac ladd m n :=
   match m with
-  | 0 => constr:n
+  | 0 => constr:(n)
   | S ?m' => let x := ladd m' n in constr:(S x)
   end.
 
